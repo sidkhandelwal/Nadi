@@ -27,7 +27,6 @@ SHORT_NAMES = {
     "Saturn": "Sat", "Rahu": "Rah", "Ketu": "Ket"
 }
 
-# The true cyclic order of Nakshatra Lords
 VIMSHOTTARI_LORDS = ["Ketu", "Venus", "Sun", "Moon", "Mars", "Rahu", "Jupiter", "Saturn", "Mercury"]
 VIMSHOTTARI_YEARS = [7, 20, 6, 10, 7, 18, 16, 19, 17]
 TOTAL_VIM_YEARS = 120
@@ -37,29 +36,20 @@ NAKSHATRA_SPAN = 360.0 / 27.0
 # CORE ENGINES
 # =====================================================================
 def get_nadi_lords(longitude):
-    """Calculates KP/Nadi Star Lord and Sub Lord correctly."""
     longitude = longitude % 360.0
     nakshatra_idx = int(longitude / NAKSHATRA_SPAN)
     
-    # FIXED: Clean modulo 9 cycle for Star Lord
     star_lord_idx = nakshatra_idx % 9
     position_in_nakshatra = longitude - (nakshatra_idx * NAKSHATRA_SPAN)
     
     star_lord = VIMSHOTTARI_LORDS[star_lord_idx]
     
-    # Sub Lord calculation
     sub_lord = None
     accumulated_span = 0.0
-    
-    # The Sub Lord sequence starts from the Star Lord itself
     for i in range(9):
         current_lord_idx = (star_lord_idx + i) % 9
         dasha_years = VIMSHOTTARI_YEARS[current_lord_idx]
-        
-        # Sub span is proportional to Dasha years
         sub_span = (dasha_years / TOTAL_VIM_YEARS) * NAKSHATRA_SPAN
-        
-        # We add a tiny epsilon (1e-6) to handle floating point precision at exact boundaries
         if accumulated_span <= position_in_nakshatra < (accumulated_span + sub_span) + 1e-6:
             sub_lord = VIMSHOTTARI_LORDS[current_lord_idx]
             break
@@ -78,20 +68,17 @@ def determine_bhava_placement(planet_long, cusp_dict):
     return 12
 
 def get_aspecting_planets(target_sign, planetary_data_with_signs):
-    """Calculates Vedic Parashari Aspects and Conjunctions."""
     influencers = []
     for p_name, data in planetary_data_with_signs.items():
         if p_name in ["Rahu", "Ketu"]:
-            continue # Nodes don't aspect
+            continue 
             
         p_sign = data["sign"]
         
-        # 1. Conjunction
         if p_sign == target_sign:
             influencers.append(p_name)
             continue
             
-        # 2. Aspects
         dist = (target_sign - p_sign) % 12
         if dist < 0: dist += 12
         dist += 1 
@@ -107,16 +94,28 @@ def get_aspecting_planets(target_sign, planetary_data_with_signs):
             
     return influencers
 
-@st.cache_data(show_spinner=False)
 def get_coordinates(place_name):
-    url = f"https://nominatim.openstreetmap.org/search?q={place_name}&format=json&limit=1"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    """
+    Geocoding Engine fixed with proper API headers and parameter passing
+    to bypass OpenStreetMap's anti-bot blocks.
+    """
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        'q': place_name,
+        'format': 'json',
+        'limit': 1
+    }
+    # A unique, respectful user agent prevents IP blocking
+    headers = {'User-Agent': 'UmangTanejaNadiEngine_Local/1.0'}
+    
     try:
-        response = requests.get(url, headers=headers, timeout=5).json()
-        if isinstance(response, list) and len(response) > 0:
-            return float(response[0]['lat']), float(response[0]['lon'])
-    except Exception:
-        pass
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status() # Automatically throws an error if blocked (e.g., 403)
+        data = response.json()
+        if data and len(data) > 0:
+            return float(data[0]['lat']), float(data[0]['lon'])
+    except Exception as e:
+        st.sidebar.warning(f"Geocoding API issue: {e}")
     return None, None
 
 # =====================================================================
@@ -236,7 +235,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         "sign": int(ketu_long / 30.0) + 1
     }
 
-    # Pass 3: APPLY UMANG TANEJA NODE RULES (Aspects, Conjunctions, AND Sign Lord)
+    # Pass 3: Node Rules (Aspects, Conjunctions, AND Sign Lord)
     for node in ["Rahu", "Ketu"]:
         node_sign = planetary_data[node]["sign"]
         
@@ -322,15 +321,16 @@ st.markdown("Generates dynamic Nirayana Bhava Chalit scripts with fully automate
 with st.sidebar:
     st.header("Birth Details")
     dob_input = st.date_input("Date of Birth", value=datetime.date(1983, 1, 15), min_value=datetime.date(1900, 1, 1))
-    tob_input = st.time_input("Time of Birth", value=datetime.time(1, 43))
+
+    tob_input = st.time_input("Time of Birth", value=datetime.time(1, 43), step=60)
     
     st.markdown("---")
-    place_input = st.text_input("City, Country", value="Muzaffarnagar, India")
+    place_input = st.text_input("City, Country", value="Pune, India")
     
     use_manual_coords = st.checkbox("Enter Lat/Lon Manually", value=False)
     if use_manual_coords:
-        manual_lat = st.number_input("Latitude", value=29.4727, format="%.4f")
-        manual_lon = st.number_input("Longitude", value=77.7085, format="%.4f")
+        manual_lat = st.number_input("Latitude", value=18.5204, format="%.4f")
+        manual_lon = st.number_input("Longitude", value=73.8567, format="%.4f")
         
     tz_input = st.number_input("Timezone Offset (Hours from UTC)", value=5.5, step=0.5)
     
@@ -347,7 +347,7 @@ if generate_btn:
                 lat, lon = get_coordinates(place_input)
             
             if lat is None or lon is None:
-                st.error("Could not locate city. Check the 'Enter Lat/Lon Manually' box and input coordinates directly.")
+                st.error("Could not locate city via API. Please check the 'Enter Lat/Lon Manually' box and input coordinates directly.")
             else:
                 data, ayanamsa, lagna_chart, chalit_chart = generate_nadi_data(dob_input, tob_input, lat, lon, tz_input)
                 df = pd.DataFrame(data)
