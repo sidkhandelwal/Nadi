@@ -12,7 +12,7 @@ import pandas as pd
 swe.set_ephe_path('') 
 
 # =====================================================================
-# ASTROLOGICAL CONSTANTS
+# ASTROLOGICAL CONSTANTS & BOOK SIGNIFIERS
 # =====================================================================
 PLANETS = {
     swe.SUN: "Sun", swe.MOON: "Moon", swe.MARS: "Mars", 
@@ -31,14 +31,30 @@ VIMSHOTTARI_LORDS = ["Ketu", "Venus", "Sun", "Moon", "Mars", "Rahu", "Jupiter", 
 VIMSHOTTARI_YEARS = [7, 20, 6, 10, 7, 18, 16, 19, 17]
 TOTAL_VIM_YEARS = 120
 
+# Derived directly from Umang Taneja's "Accurate Predictive Methodology"
+EVENT_SIGNIFIERS = {
+    "None (Default View)": [],
+    "Education (Max Marks)": [4, 9, 11],
+    "Litigation (Bail/Win)": [6, 11],
+    "Litigation (Imprisonment)": [2, 3, 8, 12],
+    "Property (Purchase)": [4, 11, 12],
+    "Property (Sale)": [3, 5, 10],
+    "Vehicle (Purchase)": [4, 11, 12],
+    "Vehicle (Sale/Theft)": [3, 5, 10, 8, 12],
+    "Health (Disease)": [6, 8, 12],
+    "Health (Cure/Recovery)": [1, 5, 11],
+    "Career (Job)": [2, 6, 10, 11],
+    "Career (Business)": [2, 7, 10, 11],
+    "Career (Loss/Change)": [5, 8, 9, 12],
+    "Travel (Foreign/Long)": [3, 9, 12],
+    "Marriage": [2, 7, 11],
+    "Divorce/Separation": [1, 6, 10]
+}
+
 # =====================================================================
 # CORE ENGINES
 # =====================================================================
 def get_nadi_lords(longitude):
-    """
-    Calculates Star Lord and Sub Lord using exact Arc-Second integer arithmetic 
-    to completely eliminate floating-point boundary errors (Per Umang Taneja Rules).
-    """
     long_seconds = int(round((longitude % 360.0) * 3600.0))
     nak_idx = long_seconds // 48000
     star_lord_idx = nak_idx % 9
@@ -101,7 +117,6 @@ def get_aspecting_planets(target_sign, planetary_data_with_signs):
     return influencers
 
 def format_degree(raw_longitude):
-    """Formats 360-degree longitude into Zodiac Sign Degree/Minute (0-30)."""
     sign_deg = raw_longitude % 30.0
     d = int(sign_deg)
     m = int((sign_deg - d) * 60)
@@ -157,9 +172,40 @@ def create_north_indian_svg(data_dict):
     return svg
 
 # =====================================================================
+# HIGHLIGHTING FORMATTER
+# =====================================================================
+def format_houses(houses_list, target_houses):
+    """Wraps target houses in HTML tags to render them as green pills."""
+    formatted = []
+    for h in sorted(houses_list):
+        if h in target_houses:
+            formatted.append(f"<span class='highlight-pill'>{h}</span>")
+        else:
+            formatted.append(str(h))
+    return ", ".join(formatted)
+
+def render_styled_table(df):
+    """Injects custom CSS to style the HTML table properly in Streamlit."""
+    # CSS is intentionally NOT indented to prevent Streamlit from rendering it as a Markdown Code Block
+    css = """<style>
+.nadi-table { width: 100%; border-collapse: collapse; font-family: sans-serif; font-size: 14px; margin-top: 10px; }
+.nadi-table th { background-color: #f0f2f6; color: #31333F; padding: 12px; text-align: left; border-bottom: 2px solid #ddd; }
+.nadi-table td { padding: 12px; border-bottom: 1px solid #eee; color: #31333F; vertical-align: middle; }
+.nadi-table tr:hover { background-color: #f8f9fa; }
+.highlight-pill { background-color: #4CAF50; color: white; padding: 3px 6px; border-radius: 4px; font-weight: bold; display: inline-block; }
+</style>"""
+    
+    html = df.to_html(escape=False, index=False, classes="nadi-table")
+    # Clean up default Pandas table borders
+    html = html.replace('border="1"', 'border="0"')
+    
+    # Wrap in a div to ensure Streamlit treats it strictly as HTML
+    st.markdown(f'<div style="overflow-x: auto;">{css}{html}</div>', unsafe_allow_html=True)
+
+# =====================================================================
 # DYNAMIC ORCHESTRATION PIPELINE
 # =====================================================================
-def generate_nadi_data(dob, tob, lat, lon, tz_offset):
+def generate_nadi_data(dob, tob, lat, lon, tz_offset, target_houses):
     local_dt = datetime.datetime.combine(dob, tob)
     utc_dt = local_dt - datetime.timedelta(hours=tz_offset)
     jul_day = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, 
@@ -176,10 +222,6 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     if lahiri_ayanamsa > 180: lahiri_ayanamsa -= 360.0
     if lahiri_ayanamsa < -180: lahiri_ayanamsa += 360.0
     
-    # -------------------------------------------------------------
-    # FIXED: Subtracting 6 minutes from Lahiri Ayanamsa 
-    # mathematically ADDS 6 minutes to all planet/cusp positions.
-    # -------------------------------------------------------------
     nadi_ayanamsa = lahiri_ayanamsa - (6.0 / 60.0) 
     
     cusps, ascmc = swe.houses_ex(jul_day, lat, lon, b'P') 
@@ -246,8 +288,8 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
 
     for node in ["Rahu", "Ketu"]:
         node_sign = planetary_data[node]["sign"]
-        
         sign_lord = sign_owners[node_sign]
+        
         influencing_planets = [sign_lord]
         influencing_planets.extend(get_aspecting_planets(node_sign, planetary_data))
         influencing_planets = list(set(influencing_planets))
@@ -260,9 +302,6 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         planetary_data[node]["ownership"].extend(node_extra_houses)
         planetary_data[node]["ownership"] = list(set(planetary_data[node]["ownership"]))
 
-    # ==========================================
-    # CHART GENERATION LOGIC
-    # ==========================================
     asc_sidereal = (ascmc[0] - nadi_ayanamsa) % 360.0
     asc_sign = int(asc_sidereal / 30.0) + 1
     
@@ -284,18 +323,19 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
                 planets_here.append(SHORT_NAMES[p])
         chalit_dict[h] = format_chart_text(sign_here, planets_here)
 
-    # ==========================================
-    # TABLE GENERATION LOGIC
-    # ==========================================
+    # Compile Table with Dynamic HTML Formatting
     table_data = []
     planet_order = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn", "Rahu", "Ketu"]
     
     for p_name in planet_order:
         data = planetary_data[p_name]
+        
+        # Base Planet Houses
         p_houses = list(set([data["placement"]] + data["ownership"]))
         p_houses = [h for h in p_houses if h != 0]
-        p_houses_str = ", ".join(map(str, sorted(p_houses)))
+        p_houses_str = format_houses(p_houses, target_houses)
         
+        # Lords Setup
         stl_name = data["star_lord_name"]
         sl_name = data["sub_lord_name"]
         
@@ -308,11 +348,11 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         stl_houses = [h for h in stl_houses if h != 0]
         sl_houses = [h for h in sl_houses if h != 0]
         
-        stl_str = f"{stl_name} (" + ", ".join(map(str, sorted(stl_houses))) + ")"
-        sl_str = f"{sl_name} (" + ", ".join(map(str, sorted(sl_houses))) + ")"
+        stl_str = f"<b>{stl_name}</b> ({format_houses(stl_houses, target_houses)})"
+        sl_str =  f"<b>{sl_name}</b> ({format_houses(sl_houses, target_houses)})"
         
         table_data.append({
-            "Planet": p_name,
+            "Planet": f"<b>{p_name}</b>",
             "Degree": data["degree"],
             "Planet Houses (P)": p_houses_str,
             "Star Lord (StL)": stl_str,
@@ -325,7 +365,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
 # STREAMLIT UI LAYOUT
 # =====================================================================
 st.title("🪐 Universal Nadi Significance Engine")
-st.markdown("Generates dynamic Nirayana Bhava Chalit scripts with precise Ayanamsa rules.")
+st.markdown("Generates dynamic Nirayana Bhava Chalit scripts with Event Highlight visualizers.")
 
 with st.sidebar:
     st.header("Birth Details")
@@ -343,6 +383,10 @@ with st.sidebar:
     tz_input = st.number_input("Timezone Offset (Hours from UTC)", value=5.5, step=0.5)
     
     st.markdown("---")
+    st.header("Predictive Filters")
+    event_selection = st.selectbox("Highlight Event Promisers", list(EVENT_SIGNIFIERS.keys()))
+    
+    st.markdown("---")
     generate_btn = st.button("Generate Chart & Script", type="primary", use_container_width=True)
 
 if generate_btn:
@@ -354,9 +398,13 @@ if generate_btn:
                 lat, lon = get_coordinates(place_input)
             
             if lat is None or lon is None:
-                st.error("Could not locate city via API. Please check the 'Enter Lat/Lon Manually' box and input coordinates directly.")
+                st.error("Could not locate city. Please check the 'Enter Lat/Lon Manually' box and input coordinates directly.")
             else:
-                data, ayanamsa, lagna_chart, chalit_chart = generate_nadi_data(dob_input, tob_input, lat, lon, tz_input)
+                target_houses = EVENT_SIGNIFIERS[event_selection]
+                
+                data, ayanamsa, lagna_chart, chalit_chart = generate_nadi_data(
+                    dob_input, tob_input, lat, lon, tz_input, target_houses
+                )
                 df = pd.DataFrame(data)
                 
                 st.success("Calculation Complete")
@@ -383,10 +431,11 @@ if generate_btn:
                 st.markdown("<br><hr>", unsafe_allow_html=True)
                 
                 st.subheader("Dynamic Nadi Significance Table")
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                if event_selection != "None (Default View)":
+                    st.info(f"**Filter Active:** Highlighting houses {target_houses} related to '{event_selection}'.")
                 
-                st.markdown("---")
-                st.success("✔️ **Ayanamsa Fixed:** Correctly subtracted 6' from Lahiri Ayanamsa to perfectly push all planetary and cusp longitudes forward by 6 minutes per Umang Taneja's text rule.")
+                # Using the safely dedented HTML render function
+                render_styled_table(df)
                 
     except Exception as e:
         import traceback
