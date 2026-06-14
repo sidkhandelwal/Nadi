@@ -1,6 +1,6 @@
 import streamlit as st
 
-# 1. PAGE CONFIG MUST BE THE VERY FIRST COMMAND
+# 1. PAGE CONFIG
 st.set_page_config(page_title="Nadi Jyotish Engine", layout="wide")
 
 import datetime
@@ -30,6 +30,7 @@ NAKSHATRA_SPAN = 360.0 / 27.0
 # CORE ENGINES
 # =====================================================================
 def get_nadi_lords(longitude):
+    """Calculates Star Lord and Sub Lord based on 120-year Vimshottari fraction."""
     longitude = longitude % 360.0
     nakshatra_idx = int(longitude / NAKSHATRA_SPAN)
     nakshatra_start_lord_idx = (nakshatra_idx * 3) % 9
@@ -51,7 +52,7 @@ def get_nadi_lords(longitude):
     return star_lord, sub_lord
 
 def determine_bhava_placement(planet_long, cusp_dict):
-    """Safely determines placement using a normalized 1-12 dictionary."""
+    """Dynamically drops the planet into the correct Placidus house."""
     asc_cusp = cusp_dict[1]
     normalized_planet = (planet_long - asc_cusp) % 360.0
     bounds = {h: (cusp_dict[h] - asc_cusp) % 360.0 for h in range(1, 13)}
@@ -63,11 +64,11 @@ def determine_bhava_placement(planet_long, cusp_dict):
 
 @st.cache_data(show_spinner=False)
 def get_coordinates(place_name):
+    """Fetches Lat/Lon securely."""
     url = f"https://nominatim.openstreetmap.org/search?q={place_name}&format=json&limit=1"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         response = requests.get(url, headers=headers, timeout=5).json()
-        # Safe array extraction
         if isinstance(response, list) and len(response) > 0:
             return float(response[0]['lat']), float(response[0]['lon'])
     except Exception:
@@ -75,9 +76,10 @@ def get_coordinates(place_name):
     return None, None
 
 # =====================================================================
-# ORCHESTRATION PIPELINE
+# DYNAMIC ORCHESTRATION PIPELINE
 # =====================================================================
 def generate_nadi_data(dob, tob, lat, lon, tz_offset):
+    # Convert Local Time to UTC properly
     local_dt = datetime.datetime.combine(dob, tob)
     utc_dt = local_dt - datetime.timedelta(hours=tz_offset)
     
@@ -86,23 +88,28 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     
     swe.set_sid_mode(swe.SIDM_LAHIRI)
     
-    # Safe Ayanamsa extraction compatible with all PySwissEph versions
-    try:
-        lahiri_ayanamsa = swe.get_ayanamsa_ex_ut(jul_day, 0)[0]
-    except TypeError:
-        lahiri_ayanamsa = swe.get_ayanamsa_ut(jul_day)
-        
-    nadi_ayanamsa = lahiri_ayanamsa + (6.0 / 60.0) 
+    # BULLETPROOF AYANAMSA EXTRACTION: 
+    # Calculate Sun in both Tropical and Sidereal, find the difference manually.
+    # This prevents the library from throwing "0" if ephemeris files are missing.
+    res_trop = swe.calc_ut(jul_day, swe.SUN, 0)
+    res_sid = swe.calc_ut(jul_day, swe.SUN, swe.FLG_SIDEREAL)
     
-    # Extract Houses and normalize to 1-12 dictionary safely
+    trop_sun = res_trop[0][0] if isinstance(res_trop, tuple) and isinstance(res_trop[0], tuple) else res_trop[0]
+    sid_sun = res_sid[0][0] if isinstance(res_sid, tuple) and isinstance(res_sid[0], tuple) else res_sid[0]
+    
+    lahiri_ayanamsa = (trop_sun - sid_sun) % 360.0
+    if lahiri_ayanamsa > 180: lahiri_ayanamsa -= 360.0
+    if lahiri_ayanamsa < -180: lahiri_ayanamsa += 360.0
+    
+    # Apply Umang Taneja's Nadi Rule: Lahiri + 6 mins (0.1 deg)
+    nadi_ayanamsa = lahiri_ayanamsa + 0.1 
+    
+    # Generate Tropical Houses and shift to Nadi Sidereal dynamically
     cusps, ascmc = swe.houses_ex(jul_day, lat, lon, b'P') 
     cusp_dict = {}
-    if len(cusps) == 13:
-        for i in range(1, 13):
-            cusp_dict[i] = (cusps[i] - nadi_ayanamsa) % 360.0
-    else: # If length is 12
-        for i in range(1, 13):
-            cusp_dict[i] = (cusps[i-1] - nadi_ayanamsa) % 360.0
+    offset = 0 if len(cusps) == 13 else -1
+    for i in range(1, 13):
+        cusp_dict[i] = (cusps[i + offset] - nadi_ayanamsa) % 360.0
             
     sign_owners = {
         1: "Mars", 2: "Venus", 3: "Mercury", 4: "Moon", 5: "Sun", 6: "Mercury",
@@ -132,7 +139,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
             "sub_lord_name": sub_lord
         }
         
-    # True Node specific logic safely extracted
+    # True Node (Rahu/Ketu) specific logic
     rahu_res = swe.calc_ut(jul_day, swe.TRUE_NODE, 0)
     rahu_tropical = rahu_res[0][0] if isinstance(rahu_res, tuple) and isinstance(rahu_res[0], tuple) else rahu_res[0]
     
@@ -149,6 +156,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         "sub_lord_name": ketu_sub
     }
 
+    # Build the fully formatted display table
     table_data = []
     for p_name, data in planetary_data.items():
         p_houses = list(set([data["placement"]] + data["ownership"]))
@@ -160,8 +168,8 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         stl_houses = list(set([planetary_data[stl_name]["placement"]] + planetary_data[stl_name]["ownership"]))
         sl_houses = list(set([planetary_data[sl_name]["placement"]] + planetary_data[sl_name]["ownership"]))
         
-        stl_str = f"{stl_name} (" + ",".join(map(str, sorted(stl_houses))) + ")"
-        sl_str = f"{sl_name} (" + ",".join(map(str, sorted(sl_houses))) + ")"
+        stl_str = f"{stl_name} (" + ", ".join(map(str, sorted(stl_houses))) + ")"
+        sl_str = f"{sl_name} (" + ", ".join(map(str, sorted(sl_houses))) + ")"
         
         table_data.append({
             "Planet": p_name,
@@ -175,12 +183,12 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
 # =====================================================================
 # STREAMLIT UI LAYOUT
 # =====================================================================
-st.title("🪐 Umang Taneja Nadi Significance Engine")
-st.markdown("Calculates Nirayana Bhava Chalit using True Nodes, Placidus Cusps, and Nadi Ayanamsa (Lahiri + 0°06').")
+st.title("🪐 Universal Nadi Significance Engine")
+st.markdown("Generates dynamic Nirayana Bhava Chalit scripts for any birth details using True Nodes, Placidus Cusps, and Nadi Ayanamsa.")
 
 with st.sidebar:
     st.header("Birth Details")
-    dob_input = st.date_input("Date of Birth", value=datetime.date(1983, 1, 15), min_value=datetime.date(1900, 1, 1), max_value=datetime.date(2100, 12, 31))
+    dob_input = st.date_input("Date of Birth", value=datetime.date(1983, 1, 15), min_value=datetime.date(1900, 1, 1))
     tob_input = st.time_input("Time of Birth", value=datetime.time(1, 43))
     
     st.markdown("---")
@@ -189,8 +197,8 @@ with st.sidebar:
     
     use_manual_coords = st.checkbox("Enter Lat/Lon Manually", value=False)
     if use_manual_coords:
-        manual_lat = st.number_input("Latitude", value=29.4727)
-        manual_lon = st.number_input("Longitude", value=77.7085)
+        manual_lat = st.number_input("Latitude", value=29.4727, format="%.4f")
+        manual_lon = st.number_input("Longitude", value=77.7085, format="%.4f")
         
     tz_input = st.number_input("Timezone Offset (Hours from UTC)", value=5.5, step=0.5)
     
@@ -207,7 +215,7 @@ if generate_btn:
                 lat, lon = get_coordinates(place_input)
             
             if lat is None or lon is None:
-                st.error(f"Could not automatically locate '{place_input}'. Please check the 'Enter Lat/Lon Manually' box in the sidebar and input your coordinates.")
+                st.error("Could not locate city. Check the 'Enter Lat/Lon Manually' box and input coordinates directly.")
             else:
                 data, ayanamsa = generate_nadi_data(dob_input, tob_input, lat, lon, tz_input)
                 df = pd.DataFrame(data)
@@ -217,13 +225,16 @@ if generate_btn:
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Latitude", f"{lat:.4f}")
                 col2.metric("Longitude", f"{lon:.4f}")
-                col3.metric("Nadi Ayanamsa Applied", f"{int(ayanamsa)}° {int((ayanamsa%1)*60)}'")
                 
-                st.subheader("Nadi Significance Table")
+                degrees = int(ayanamsa)
+                minutes = int((ayanamsa - degrees) * 60)
+                col3.metric("Nadi Ayanamsa Applied", f"{degrees}° {minutes}'")
+                
+                st.subheader("Dynamic Nadi Significance Table")
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
-                st.info("**Note on Nodes:** Rahu and Ketu significance currently displays their Placement and Sign Lord ownership. Manual planetary aspects (e.g., Saturn aspecting Ketu) must be applied manually as per Taneja rules.")
+                st.info("⚠️ **Note on Rahu & Ketu:** The script currently displays their Base Placement + Sign Lord ownership. If manual planetary aspects exist in the chart (e.g., Saturn aspecting Ketu), those extra houses must be mentally added to the nodes' scripts by the astrologer.")
                 
     except Exception as e:
         import traceback
