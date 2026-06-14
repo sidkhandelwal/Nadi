@@ -27,6 +27,7 @@ SHORT_NAMES = {
     "Saturn": "Sat", "Rahu": "Rah", "Ketu": "Ket"
 }
 
+# The true cyclic order of Nakshatra Lords
 VIMSHOTTARI_LORDS = ["Ketu", "Venus", "Sun", "Moon", "Mars", "Rahu", "Jupiter", "Saturn", "Mercury"]
 VIMSHOTTARI_YEARS = [7, 20, 6, 10, 7, 18, 16, 19, 17]
 TOTAL_VIM_YEARS = 120
@@ -36,20 +37,30 @@ NAKSHATRA_SPAN = 360.0 / 27.0
 # CORE ENGINES
 # =====================================================================
 def get_nadi_lords(longitude):
+    """Calculates KP/Nadi Star Lord and Sub Lord correctly."""
     longitude = longitude % 360.0
     nakshatra_idx = int(longitude / NAKSHATRA_SPAN)
-    nakshatra_start_lord_idx = (nakshatra_idx * 3) % 9
+    
+    # FIXED: Clean modulo 9 cycle for Star Lord
+    star_lord_idx = nakshatra_idx % 9
     position_in_nakshatra = longitude - (nakshatra_idx * NAKSHATRA_SPAN)
     
-    star_lord = VIMSHOTTARI_LORDS[nakshatra_start_lord_idx]
+    star_lord = VIMSHOTTARI_LORDS[star_lord_idx]
     
+    # Sub Lord calculation
     sub_lord = None
     accumulated_span = 0.0
+    
+    # The Sub Lord sequence starts from the Star Lord itself
     for i in range(9):
-        current_lord_idx = (nakshatra_start_lord_idx + i) % 9
+        current_lord_idx = (star_lord_idx + i) % 9
         dasha_years = VIMSHOTTARI_YEARS[current_lord_idx]
+        
+        # Sub span is proportional to Dasha years
         sub_span = (dasha_years / TOTAL_VIM_YEARS) * NAKSHATRA_SPAN
-        if accumulated_span <= position_in_nakshatra < (accumulated_span + sub_span):
+        
+        # We add a tiny epsilon (1e-6) to handle floating point precision at exact boundaries
+        if accumulated_span <= position_in_nakshatra < (accumulated_span + sub_span) + 1e-6:
             sub_lord = VIMSHOTTARI_LORDS[current_lord_idx]
             break
         accumulated_span += sub_span
@@ -209,7 +220,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     
     planetary_data["Rahu"] = {
         "placement": determine_bhava_placement(rahu_long, cusp_dict),
-        "ownership": house_ownerships["Rahu"], # Initially Empty
+        "ownership": house_ownerships["Rahu"],
         "star_lord_name": get_nadi_lords(rahu_long)[0],
         "sub_lord_name": get_nadi_lords(rahu_long)[1],
         "raw_long": rahu_long,
@@ -218,7 +229,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     
     planetary_data["Ketu"] = {
         "placement": determine_bhava_placement(ketu_long, cusp_dict),
-        "ownership": house_ownerships["Ketu"], # Initially Empty
+        "ownership": house_ownerships["Ketu"],
         "star_lord_name": get_nadi_lords(ketu_long)[0],
         "sub_lord_name": get_nadi_lords(ketu_long)[1],
         "raw_long": ketu_long,
@@ -229,14 +240,9 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     for node in ["Rahu", "Ketu"]:
         node_sign = planetary_data[node]["sign"]
         
-        # Rule 3: Sign Lord
         sign_lord = sign_owners[node_sign]
         influencing_planets = [sign_lord]
-        
-        # Rules 1 & 2: Conjunctions and Aspects
         influencing_planets.extend(get_aspecting_planets(node_sign, planetary_data))
-        
-        # Remove duplicates (e.g. if Sign Lord also aspects/conjuncts)
         influencing_planets = list(set(influencing_planets))
         
         node_extra_houses = []
@@ -245,7 +251,6 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
             node_extra_houses.extend(planetary_data[inf_p]["ownership"])
             
         planetary_data[node]["ownership"].extend(node_extra_houses)
-        # Clean up duplicates
         planetary_data[node]["ownership"] = list(set(planetary_data[node]["ownership"]))
 
     # ==========================================
@@ -281,7 +286,6 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     for p_name in planet_order:
         data = planetary_data[p_name]
         p_houses = list(set([data["placement"]] + data["ownership"]))
-        # Filter out 0s just in case
         p_houses = [h for h in p_houses if h != 0]
         p_houses_str = ", ".join(map(str, sorted(p_houses)))
         
