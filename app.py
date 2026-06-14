@@ -30,30 +30,36 @@ SHORT_NAMES = {
 VIMSHOTTARI_LORDS = ["Ketu", "Venus", "Sun", "Moon", "Mars", "Rahu", "Jupiter", "Saturn", "Mercury"]
 VIMSHOTTARI_YEARS = [7, 20, 6, 10, 7, 18, 16, 19, 17]
 TOTAL_VIM_YEARS = 120
-NAKSHATRA_SPAN = 360.0 / 27.0 
 
 # =====================================================================
 # CORE ENGINES
 # =====================================================================
 def get_nadi_lords(longitude):
-    longitude = longitude % 360.0
-    nakshatra_idx = int(longitude / NAKSHATRA_SPAN)
-    
-    star_lord_idx = nakshatra_idx % 9
-    position_in_nakshatra = longitude - (nakshatra_idx * NAKSHATRA_SPAN)
-    
+    """
+    Calculates Star Lord and Sub Lord using exact Arc-Second integer arithmetic 
+    to completely eliminate floating-point boundary errors (Per Umang Taneja Rules).
+    """
+    long_seconds = int(round((longitude % 360.0) * 3600.0))
+    nak_idx = long_seconds // 48000
+    star_lord_idx = nak_idx % 9
     star_lord = VIMSHOTTARI_LORDS[star_lord_idx]
     
+    pos_in_nak_seconds = long_seconds % 48000
     sub_lord = None
-    accumulated_span = 0.0
+    accumulated_sec = 0
+    
     for i in range(9):
         current_lord_idx = (star_lord_idx + i) % 9
         dasha_years = VIMSHOTTARI_YEARS[current_lord_idx]
-        sub_span = (dasha_years / TOTAL_VIM_YEARS) * NAKSHATRA_SPAN
-        if accumulated_span <= position_in_nakshatra < (accumulated_span + sub_span) + 1e-6:
+        sub_span_sec = dasha_years * 400 
+        
+        if accumulated_sec <= pos_in_nak_seconds < (accumulated_sec + sub_span_sec):
             sub_lord = VIMSHOTTARI_LORDS[current_lord_idx]
             break
-        accumulated_span += sub_span
+        accumulated_sec += sub_span_sec
+        
+    if sub_lord is None:
+        sub_lord = VIMSHOTTARI_LORDS[(star_lord_idx + 8) % 9]
         
     return star_lord, sub_lord
 
@@ -94,23 +100,20 @@ def get_aspecting_planets(target_sign, planetary_data_with_signs):
             
     return influencers
 
+def format_degree(raw_longitude):
+    """Formats 360-degree longitude into Zodiac Sign Degree/Minute (0-30)."""
+    sign_deg = raw_longitude % 30.0
+    d = int(sign_deg)
+    m = int((sign_deg - d) * 60)
+    return f"{d:02d}° {m:02d}'"
+
 def get_coordinates(place_name):
-    """
-    Geocoding Engine fixed with proper API headers and parameter passing
-    to bypass OpenStreetMap's anti-bot blocks.
-    """
     url = "https://nominatim.openstreetmap.org/search"
-    params = {
-        'q': place_name,
-        'format': 'json',
-        'limit': 1
-    }
-    # A unique, respectful user agent prevents IP blocking
+    params = {'q': place_name, 'format': 'json', 'limit': 1}
     headers = {'User-Agent': 'UmangTanejaNadiEngine_Local/1.0'}
-    
     try:
         response = requests.get(url, params=params, headers=headers, timeout=10)
-        response.raise_for_status() # Automatically throws an error if blocked (e.g., 403)
+        response.raise_for_status() 
         data = response.json()
         if data and len(data) > 0:
             return float(data[0]['lat']), float(data[0]['lon'])
@@ -172,7 +175,12 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     lahiri_ayanamsa = (trop_sun - sid_sun) % 360.0
     if lahiri_ayanamsa > 180: lahiri_ayanamsa -= 360.0
     if lahiri_ayanamsa < -180: lahiri_ayanamsa += 360.0
-    nadi_ayanamsa = lahiri_ayanamsa + 0.1 
+    
+    # -------------------------------------------------------------
+    # FIXED: Subtracting 6 minutes from Lahiri Ayanamsa 
+    # mathematically ADDS 6 minutes to all planet/cusp positions.
+    # -------------------------------------------------------------
+    nadi_ayanamsa = lahiri_ayanamsa - (6.0 / 60.0) 
     
     cusps, ascmc = swe.houses_ex(jul_day, lat, lon, b'P') 
     cusp_dict = {}
@@ -193,7 +201,6 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
 
     planetary_data = {}
     
-    # Pass 1: Compute basic info for all true planets
     for p_id, p_name in PLANETS.items():
         res = swe.calc_ut(jul_day, p_id, 0)
         p_trop = res[0][0] if isinstance(res, tuple) and isinstance(res[0], tuple) else res[0]
@@ -203,6 +210,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         star_lord, sub_lord = get_nadi_lords(raw_long)
         
         planetary_data[p_name] = {
+            "degree": format_degree(raw_long),
             "placement": placement,
             "ownership": house_ownerships[p_name],
             "star_lord_name": star_lord,
@@ -211,13 +219,13 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
             "sign": int(raw_long / 30.0) + 1
         }
         
-    # Pass 2: Setup Nodes
     rahu_res = swe.calc_ut(jul_day, swe.TRUE_NODE, 0)
     rahu_trop = rahu_res[0][0] if isinstance(rahu_res, tuple) and isinstance(rahu_res[0], tuple) else rahu_res[0]
     rahu_long = (rahu_trop - nadi_ayanamsa) % 360.0
     ketu_long = (rahu_long + 180.0) % 360.0
     
     planetary_data["Rahu"] = {
+        "degree": format_degree(rahu_long),
         "placement": determine_bhava_placement(rahu_long, cusp_dict),
         "ownership": house_ownerships["Rahu"],
         "star_lord_name": get_nadi_lords(rahu_long)[0],
@@ -227,6 +235,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
     }
     
     planetary_data["Ketu"] = {
+        "degree": format_degree(ketu_long),
         "placement": determine_bhava_placement(ketu_long, cusp_dict),
         "ownership": house_ownerships["Ketu"],
         "star_lord_name": get_nadi_lords(ketu_long)[0],
@@ -235,7 +244,6 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         "sign": int(ketu_long / 30.0) + 1
     }
 
-    # Pass 3: Node Rules (Aspects, Conjunctions, AND Sign Lord)
     for node in ["Rahu", "Ketu"]:
         node_sign = planetary_data[node]["sign"]
         
@@ -305,6 +313,7 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
         
         table_data.append({
             "Planet": p_name,
+            "Degree": data["degree"],
             "Planet Houses (P)": p_houses_str,
             "Star Lord (StL)": stl_str,
             "Sub Lord (SL)": sl_str
@@ -316,12 +325,11 @@ def generate_nadi_data(dob, tob, lat, lon, tz_offset):
 # STREAMLIT UI LAYOUT
 # =====================================================================
 st.title("🪐 Universal Nadi Significance Engine")
-st.markdown("Generates dynamic Nirayana Bhava Chalit scripts with fully automated Node Agent rules.")
+st.markdown("Generates dynamic Nirayana Bhava Chalit scripts with precise Ayanamsa rules.")
 
 with st.sidebar:
     st.header("Birth Details")
     dob_input = st.date_input("Date of Birth", value=datetime.date(1983, 1, 15), min_value=datetime.date(1900, 1, 1))
-
     tob_input = st.time_input("Time of Birth", value=datetime.time(1, 43), step=60)
     
     st.markdown("---")
@@ -340,7 +348,6 @@ with st.sidebar:
 if generate_btn:
     try:
         with st.spinner("Calculating Ephemeris Data..."):
-            
             if use_manual_coords:
                 lat, lon = manual_lat, manual_lon
             else:
@@ -364,7 +371,6 @@ if generate_btn:
                 
                 st.markdown("---")
                 
-                # Visual Charts Display
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
                     st.markdown("<h4 style='text-align: center;'>Lagna Chart (Rashi)</h4>", unsafe_allow_html=True)
@@ -376,12 +382,11 @@ if generate_btn:
                 
                 st.markdown("<br><hr>", unsafe_allow_html=True)
                 
-                # Table Display
                 st.subheader("Dynamic Nadi Significance Table")
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
                 st.markdown("---")
-                st.success("✔️ **Node Rules Applied:** Rahu and Ketu have successfully inherited the houses of the planets that own their signs, conjunct them, and aspect them.")
+                st.success("✔️ **Ayanamsa Fixed:** Correctly subtracted 6' from Lahiri Ayanamsa to perfectly push all planetary and cusp longitudes forward by 6 minutes per Umang Taneja's text rule.")
                 
     except Exception as e:
         import traceback
